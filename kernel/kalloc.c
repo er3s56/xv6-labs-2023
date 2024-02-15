@@ -21,6 +21,7 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  signed char ref_cnt[REF_SIZE];
 } kmem;
 
 void
@@ -31,12 +32,58 @@ kinit()
 }
 
 void
+kfree_init(void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+  
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+
+  acquire(&kmem.lock);
+  r->next = kmem.freelist;
+  kmem.freelist = r;
+  release(&kmem.lock);
+}
+
+void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+    kfree_init(p);
+}
+
+int
+page_ref(void *pa)
+{
+  int cnt = 0;
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("page_ref");
+
+  cnt = ++kmem.ref_cnt[((uint64)pa - PGROUNDUP((uint64)end)) / PGSIZE];
+
+  return cnt; 
+}
+
+int
+page_deref(void *pa)
+{
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("page_deref");
+
+  int cnt = --kmem.ref_cnt[((uint64)pa - PGROUNDUP((uint64)end)) / PGSIZE];
+  if (cnt < 0)
+  {
+    printf("cnt:%d", cnt);
+    panic("page_deref cnt < 0");
+  }
+  return cnt;
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -51,12 +98,20 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  acquire(&kmem.lock);
+
+  if (page_deref(pa) > 0)
+  {
+    release(&kmem.lock);
+    return;
+  }
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
+  
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -74,9 +129,14 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
-  release(&kmem.lock);
-
+  
   if(r)
+  {
+    if (page_ref(r) > 1)
+      panic("kalloc");
     memset((char*)r, 5, PGSIZE); // fill with junk
+  }
+  
+  release(&kmem.lock);
   return (void*)r;
 }

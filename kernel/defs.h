@@ -9,6 +9,8 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+#define REF_SIZE 33000 // (PHYSTOP - PGROUNDUP((uint64)end)) / PGSIZE + 1
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -63,6 +65,8 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+int             page_ref(void *);
+int             page_deref(void *);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -173,6 +177,7 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+int             page_fault_handler(uint64);
 
 // plic.c
 void            plicinit(void);

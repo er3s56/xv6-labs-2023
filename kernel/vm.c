@@ -1,10 +1,12 @@
 #include "param.h"
 #include "types.h"
 #include "memlayout.h"
+#include "spinlock.h"
 #include "elf.h"
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -315,7 +317,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  extern struct {
+  struct spinlock lock;
+  struct run *freelist;
+  signed char ref_cnt[REF_SIZE];
+  } kmem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -324,12 +330,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    
+    if ((flags & PTE_W) != 0)
+    {
+      if(mappages(new, i, PGSIZE, pa, (flags & ~PTE_W) | PTE_COW) != 0)
+        goto err;
+      
+      *pte = (*pte & ~PTE_W) | PTE_COW;
+      
+      acquire(&kmem.lock); 
+      page_ref((void *)pa);
+      release(&kmem.lock);
+    }
+    else
+    {
+      
+      if(mappages(new, i, PGSIZE, pa, flags) != 0)
+        goto err;
+
+      acquire(&kmem.lock);
+      page_ref((void *)pa);
+      release(&kmem.lock);
     }
   }
   return 0;
@@ -337,6 +358,49 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
+}
+
+int copyout_cow_handler(uint64 addr)
+{
+  pte_t *pte;
+  uint flags;
+  uint64 pa;
+  char *mem;
+
+  struct proc *p = myproc();
+  uint64 start = PGROUNDDOWN(addr);
+
+  if (start >= MAXVA)
+    return 0;
+
+  if((pte = walk(p->pagetable, start, 0)) == 0){
+    return -1;
+  }
+      
+  
+  flags = PTE_FLAGS(*pte);
+  pa = PTE2PA(*pte);
+  if ((flags & PTE_COW) != 0)
+  {
+    if((mem = kalloc()) == 0)
+    {
+      return -1;
+    }
+      
+
+    memmove(mem, (char*)pa, PGSIZE);
+    uvmunmap(p->pagetable, start, 1, 1);
+    if (mappages(p->pagetable, start, PGSIZE, (uint64)mem, 
+    (flags & ~PTE_COW) | PTE_W) != 0)
+    {
+      printf("map fail\n");
+      kfree(mem);
+      return -1;
+    }
+    return 0;
+  }
+
+  return 0;
 }
 
 // mark a PTE invalid for user access.
@@ -363,6 +427,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if (copyout_cow_handler(va0) == -1)
+      return -1;
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
@@ -448,4 +514,44 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int page_fault_handler(uint64 addr)
+{
+  pte_t *pte;
+  uint flags;
+  uint64 pa;
+  char *mem;
+
+  struct proc *p = myproc();
+  uint64 start = PGROUNDDOWN(addr);
+
+  if((pte = walk(p->pagetable, start, 0)) == 0)
+      panic("page fault handler: pte should exist");
+
+  flags = PTE_FLAGS(*pte);
+  pa = PTE2PA(*pte);
+  if ((flags & PTE_COW) != 0)
+  {
+    if((mem = kalloc()) == 0)
+      return -1;
+
+    memmove(mem, (char*)pa, PGSIZE);
+    uvmunmap(p->pagetable, start, 1, 1);
+    if (mappages(p->pagetable, start, PGSIZE, (uint64)mem, 
+    (flags & ~PTE_COW) | PTE_W) != 0)
+    {
+      printf("map fail\n");
+      kfree(mem);
+      return -1;
+    }
+
+    return 0;
+  }
+  else
+  {
+    printf("flags PTE COW err\n");
+    return -1;
+  }
+    
 }
