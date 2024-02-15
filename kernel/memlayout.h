@@ -76,4 +76,6 @@
 struct usyscall {
   int pid;  // Process ID
 };
+
+extern struct  usyscall *usyscall_p;
 #endif
