@@ -1,0 +1,18 @@
+Using gdb:
+1.Looking at the backtrace output, which function called syscall?
+A:The syscall function is called by usertrap function.
+
+2.What is the value of p->trapframe->a7 and what does that value represent? (Hint: look user/initcode.S, the first user program xv6 starts.)
+A:The value represents the numer of syscall.
+
+3.What was the previous mode that the CPU was in?
+A:Supervisor mode.
+
+4.Write down the assembly instruction the kernel is panicing at. Which register corresponds to the variable num?
+A:p->trapframe->a7.
+
+5.Why does the kernel crash? Hint: look at figure 3-3 in the text; is address 0 mapped in the kernel address space? Is that confirmed by the value in scause above? (See description of scause in RISC-V privileged instructions)
+A:Page fault exception.
+
+6.What is the name of the binary that was running when the kernel paniced? What is its process id (pid)?
+A:Depends on the process.
