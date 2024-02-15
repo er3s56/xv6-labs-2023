@@ -122,6 +122,25 @@ usertrapret(void)
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
+  if (p->sigret_flag == 1)
+  {
+    p->sigret_flag = 0;
+    p->siglock = 0;
+    memmove(p->trapframe, p->sig_trapframe, sizeof(struct trapframe));
+    w_sepc(p->trapframe->epc);
+    p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
+  }
+  else if (p->siglock == 0
+  && p->alarm_cnt == p->alarm_interval
+  && p->alarm_interval != 0)
+  {
+    p->siglock = 1;
+    memmove(p->sig_trapframe, p->trapframe, sizeof(struct trapframe));
+    p->alarm_cnt = 0;
+    w_sepc(p->alarm_handler);
+    p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
+  }
+
   // jump to userret in trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
@@ -207,6 +226,18 @@ devintr()
 
     if(cpuid() == 0){
       clockintr();
+
+      for (struct proc *tmp_p = proc; tmp_p < &proc[NPROC]; tmp_p++) 
+      {
+        acquire(&tmp_p->lock);
+        if (tmp_p->alarm_cnt < tmp_p->alarm_interval)
+        {
+          tmp_p->alarm_cnt++;
+        }
+        else
+          tmp_p->alarm_cnt = 0;
+        release(&tmp_p->lock);
+      }
     }
     
     // acknowledge the software interrupt by clearing
