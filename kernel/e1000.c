@@ -102,7 +102,7 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  printf("TX\n");
+  // printf("TX\n");
   acquire(&e1000_lock);
   uint32 cur = regs[E1000_TDT];
 
@@ -134,9 +134,9 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
-  printf("RX\n");
+  // printf("RX\n");
 
-  struct mbuf *tmp = 0;
+  struct mbuf *new = 0;
   uint32 rdh = 0;
   uint32 rdt = 0;
   uint32 cur = 0;
@@ -146,7 +146,7 @@ e1000_recv(void)
     rdt = regs[E1000_RDT];
     cur = (rdt + 1) % RX_RING_SIZE;
 
-    printf("rx rdh:%d rdt:%d cur:%d\n", rdh, rdt, cur);
+    // printf("rx rdh:%d rdt:%d cur:%d\n", rdh, rdt, cur);
 
     if (cur == rdh)
     {
@@ -158,23 +158,19 @@ e1000_recv(void)
       return;
     }
 
-    tmp = mbufalloc(0);
-    if (tmp == 0)
+    rx_mbufs[cur]->len = rx_ring[cur].length;
+
+    net_rx(rx_mbufs[cur]);
+    new = mbufalloc(0);
+    
+    if (new == 0)
     {
       printf("rx error\n");
     }
 
-    tmp->head = tmp->buf;
-    tmp->len = rx_ring[cur].length;
-    tmp->next = rx_mbufs[cur]->next;
-    memmove(tmp->head, (void *)rx_ring[cur].addr, rx_ring[cur].length);
-    rx_ring[cur].status = 0;
-    rx_ring[cur].length = 0;
-    rx_ring[cur].csum = 0;
-    rx_ring[cur].errors = 0;
-    rx_ring[cur].special = 0;
+    rx_mbufs[cur] = new;
+    rx_ring[cur].addr = (uint64)new->head;
 
-    net_rx(tmp);
     regs[E1000_RDT] = cur;
   } while (cur != rdh);
 }
