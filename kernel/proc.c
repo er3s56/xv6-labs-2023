@@ -2,9 +2,13 @@
 #include "param.h"
 #include "memlayout.h"
 #include "riscv.h"
+#include "fs.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -145,6 +149,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+
+  for (int i = 0; i < 16; i++)
+  {
+    memset(&p->p_vma[i], 0, sizeof(struct vma));
+  }
 
   return p;
 }
@@ -296,6 +305,18 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // mmap copy
+  memmove(np->p_vma, p->p_vma, sizeof(p->p_vma));
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->p_vma[i].used == 1)
+    {
+      filedup(p->p_vma[i].f);
+      // We can malloc new pages by vma page fault handler.
+      // So don't need to uvmap here.
+    }
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -357,6 +378,37 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->p_vma[i].used == 1)
+    {
+      uint64 start = p->p_vma[i].addr;
+      int length = p->p_vma[i].length;
+      int total = (length + PGSIZE - 1) / PGSIZE;
+      
+      if ((p->p_vma[i].flags & MAP_SHARED) != 0)
+      {
+        begin_op();
+        ilock(p->p_vma[i].f->ip);
+        writei(p->p_vma[i].f->ip, 1, start, p->p_vma[i].offset, length);
+        iunlock(p->p_vma[i].f->ip);
+        end_op();
+      }
+      fileclose(p->p_vma[i].f);
+
+      for (int j = 0; j < total; j++, start += PGSIZE)
+      {
+        pte_t *tmp_pte = walk(p->pagetable, start, 0);
+        if (tmp_pte != 0 && *tmp_pte != 0)
+        {
+          uvmunmap(p->pagetable, start, 1, 1);
+        }
+      }
+      
+      vma_free(&p->p_vma[i]);
     }
   }
 

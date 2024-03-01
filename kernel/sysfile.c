@@ -503,3 +503,148 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  struct file *f;
+  int offset;
+  uint64 mmap_addr;
+  struct proc *p = myproc();
+  struct vma *v;
+  
+  argaddr(0, &addr);
+  // We speculate that addr should be a multiple of PGSIZE.
+  if (addr > MAXVA
+  || addr % PGSIZE != 0)
+    return -1;
+  // Length need not be a multiple of PGSIZE
+  argint(1, &length);
+  if (length <= 0)
+    return -1;
+  argint(2, &prot);
+  if (argfd(4, 0, &f) < 0)
+    return -1;
+  argint(3, &flags);
+  argint(5, &offset);
+
+  if (f->writable == 0
+  && (prot & PROT_WRITE) != 0
+  && (flags & MAP_SHARED) != 0)
+    return -1;
+
+  if ((mmap_addr =  search_mmapaddr(p->pagetable, addr, length)) == -1)
+    return -1;
+  if ((v = vma_alloc()) == 0)
+    return -1;
+
+  // Addr founded is a multiple of PGSIZE.
+  v->addr = mmap_addr;
+  v->length = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  v->offset = offset;
+
+  filedup(v->f);
+  
+  return v->addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr = 0, free_start = 0;
+  int length;
+  struct vma *v;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  
+  // In munmap, addr must be a multiple of PGSIZE.
+  if (addr % PGSIZE != 0
+   || length <= 0
+   || (v = vma_search_by_addr_range(addr)) == 0)
+    return -1;
+
+  // The hole condition is not allowed
+  if (addr > v->addr && (addr + length) > (v->addr + v->length))
+    return -1;
+  else if (addr <= v->addr
+  && (addr + length) >= (v->addr + v->length))
+  {
+    if ((v->flags & MAP_SHARED) != 0)
+    {
+      begin_op();
+      ilock(v->f->ip);
+      // If write the mapped region outside of file, there will be an error.
+      // Don't check return value.
+      writei(v->f->ip, 1, addr, v->offset, length);
+      iunlock(v->f->ip);
+      end_op();
+    }
+    fileclose(v->f);
+
+    free_start = v->addr;
+    int cnt = (v->length + PGSIZE - 1) / PGSIZE;
+    for (int i = 0; i < cnt; i++, free_start += PGSIZE)
+    {
+      pte_t *tmp_pte = walk(p->pagetable, free_start, 0);
+      // Because we will allocate 512 ptes in lowwest level of pagetable at a time.
+      // There will be two conditinos.
+      // 1. Really be allocated through kalloc() becasue of page fault.
+      // 2. Next to the entry in 1).(*tmp_pte is 0)
+      if (tmp_pte != 0 && *tmp_pte != 0)
+      {
+        uvmunmap(p->pagetable, free_start, 1, 1);
+      }
+    }
+    
+    vma_free(v);
+
+    return 0;
+  }
+  else
+  {
+    if ((v->flags & MAP_SHARED) != 0)
+    {
+      begin_op();
+      ilock(v->f->ip);
+      writei(v->f->ip, 1, addr, v->offset, length);
+      iunlock(v->f->ip);
+      end_op();
+    }
+
+    free_start = addr;
+    int cnt = (length + PGSIZE - 1) / PGSIZE;
+    for (int i = 0; i < cnt; i++, free_start += PGSIZE)
+    {
+      pte_t *tmp_pte = walk(p->pagetable, free_start, 0);
+      if (tmp_pte != 0 && *tmp_pte != 0)
+      {
+        uvmunmap(p->pagetable, free_start, 1, 1);
+      }
+    }
+
+    if (addr == v->addr)
+    {
+      v->addr = addr + length;
+      v->length -= length;
+      v->offset += length;
+    }
+    else if (addr + length == v->addr +v->length)
+    {
+      v->length = addr - v->addr;
+    }
+    else
+      return -1;
+
+    return 0;
+  }
+  return -1;
+}

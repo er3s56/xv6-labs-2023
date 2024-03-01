@@ -62,3 +62,5 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+#define MAPSPACE_END (TRAPFRAME - 256 * PGSIZE)
+#define MAPSPACE_START (MAPSPACE_END - 256 * PGSIZE)

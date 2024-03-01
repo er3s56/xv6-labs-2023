@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "proc.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -123,6 +128,45 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
   pa = PTE2PA(*pte);
   return pa;
+}
+
+uint64
+search_mmapaddr(pagetable_t pagetable, uint64 start, int length)
+{
+  struct proc *p = myproc();
+  uint64 search_start = MAPSPACE_START;
+  uint64 search_end = search_start;
+  int total = (length + PGSIZE -1) / PGSIZE; 
+  int cnt = 0;
+
+  // Do not use process memory, try to use highend memory.
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->p_vma[i].used == 1 && search_start < p->p_vma[i].addr + length)
+      search_start = PGROUNDUP(p->p_vma[i].addr + length);
+  }
+
+  search_end = search_start;
+  while (search_end < MAPSPACE_END)
+  {
+    if (walkaddr(pagetable, search_end) == 0)
+    {
+      search_end += PGSIZE;
+      cnt++;
+      if (cnt == total)
+      {
+        return search_start;
+      }
+      continue;
+    }
+      
+    cnt = 0;
+    search_start = search_end + PGSIZE;
+    search_end = search_start;
+  }
+
+  printf("search_mmapaddr didn't find\n");
+  return -1;
 }
 
 // add a mapping to the kernel page table.
@@ -448,4 +492,96 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+struct vma *
+vma_alloc()
+{
+  struct proc *p = myproc();
+
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->p_vma[i].used == 0)
+    {
+      p->p_vma[i].used = 1;
+      return &p->p_vma[i];
+    }
+  }
+  panic("vmalloc");
+  return 0;
+}
+
+int 
+vma_free(struct vma *i_vma)
+{
+  struct proc *p = myproc();
+
+  for (int i = 0; i < 16; i++)
+  {
+    if (i_vma == &p->p_vma[i])
+    {
+      memset(i_vma, 0, sizeof(struct vma));
+      return 0;
+    }
+  }
+  panic("vmafree");
+  return -1;
+}
+
+struct vma *
+vma_search_by_addr_range(uint64 addr)
+{
+  struct proc *p = myproc();
+
+  for (int i = 0; i < 16; i++)
+  {
+    if (addr >= p->p_vma[i].addr
+    && addr < p->p_vma[i].addr + p->p_vma[i].length)
+    {
+      return &p->p_vma[i];
+    }
+  }
+  printf("vma_search_by_addr_range didn't find\n");
+  return 0;
+}
+
+int
+vma_pagefault_handler(uint64 addr)
+{
+  struct vma *v;
+  struct proc *p = myproc();
+  int pte_flag = PTE_U;
+  char *mem = 0;
+
+  if ((v = vma_search_by_addr_range(addr)))
+  {
+    if (v->prot & PROT_READ)
+      pte_flag |= PTE_R;
+    if (v->prot & PROT_WRITE)
+      pte_flag |= PTE_W;
+    if (v->prot & PROT_EXEC)
+      pte_flag |= PTE_X;
+
+
+    mem = kalloc();
+    if(mem == 0){
+      panic("!");
+      return -1;
+    }
+    memset(mem, 0, PGSIZE);
+
+    if (readi(v->f->ip, 0, (uint64)mem, v->offset + PGROUNDDOWN(addr) - v->addr, PGSIZE) == -1)
+    {
+      panic("vma_pgfault_handler");
+    }
+    
+
+    if(mappages(p->pagetable, PGROUNDDOWN(addr), PGSIZE, (uint64)mem, pte_flag) != 0){
+      kfree(mem);
+      return -1;
+    }
+
+    return 0;
+  }
+  return -1;
 }

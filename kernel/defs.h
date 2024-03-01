@@ -187,6 +187,11 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+struct vma *    vma_alloc();
+int             vma_free(struct vma *);
+struct vma *    vma_search_by_addr_range(uint64);
+uint64          search_mmapaddr(pagetable_t, uint64, int);
+int             vma_pagefault_handler(uint64);
 
 // plic.c
 void            plicinit(void);

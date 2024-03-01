@@ -65,6 +65,11 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 0xd || r_scause() == 0xf){ // File mmaptest doesn't include the direct write test.
+    if (-1 == vma_pagefault_handler(r_stval())){
+      printf("vma exit\n");
+      exit(-1);
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
